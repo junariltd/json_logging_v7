@@ -7,6 +7,7 @@ import time
 from distutils.util import strtobool
 from openerp.sql_db import Cursor
 from openerp.addons.web.http import WebRequest
+from openerp.addons.web.controllers.main import DataSet
 from openerp.service import wsgi_server
 from werkzeug.urls import uri_to_iri
 
@@ -34,13 +35,16 @@ class OdooJsonFormatter(jsonlogger.JsonFormatter):
 
 class JsonPerfFilter(logging.Filter):
     def filter(self, record):
-        if hasattr(threading.current_thread(), "query_count"):
+        current_thread = threading.current_thread()
+        if hasattr(current_thread, "query_count"):
             record.response_time = round(
-                time.time() - threading.current_thread().perf_t0, TIMING_DP)
-            record.query_count = threading.current_thread().query_count
+                time.time() - current_thread.perf_t0, TIMING_DP)
+            record.query_count = current_thread.query_count
             record.query_time = round(
-                threading.current_thread().query_time, TIMING_DP)
-            delattr(threading.current_thread(), "query_count")
+                current_thread.query_time, TIMING_DP)
+            delattr(current_thread, "query_count")
+        if hasattr(current_thread, "log_model_method"):
+            record.model_method = current_thread.log_model_method
         return True
 
 if is_true(os.environ.get('OPENERP_LOGGING_JSON')):
@@ -99,3 +103,17 @@ if is_true(os.environ.get('OPENERP_LOGGING_JSON')):
         threading.current_thread().perf_t0 = time.time()
         return init_orig(*args, **kwargs)
     WebRequest.init = init
+
+    # Patch DataSet class to log model and method
+
+    do_search_read_orig = DataSet.do_search_read
+    def do_search_read(self, req, model, *args, **kwargs):
+        threading.current_thread().log_model_method = '%s/search_read' % model
+        return do_search_read_orig(self, req, model, *args, **kwargs)
+    DataSet.do_search_read = do_search_read
+
+    _call_kw_orig = DataSet._call_kw
+    def _call_kw(self, req, model, method, args, kwargs):
+        threading.current_thread().log_model_method = '%s/%s' % (model, method)
+        return _call_kw_orig(self, req, model, method, args, kwargs)
+    DataSet._call_kw = _call_kw
