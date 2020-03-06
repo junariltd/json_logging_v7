@@ -6,8 +6,8 @@ import time
 
 from distutils.util import strtobool
 from openerp.sql_db import Cursor
-# from openerp.service.http_server import RequestHandler
 from openerp.addons.web.http import WebRequest
+from openerp.service import wsgi_server
 from werkzeug.urls import uri_to_iri
 
 _logger = logging.getLogger(__name__)
@@ -51,7 +51,7 @@ if is_true(os.environ.get('OPENERP_LOGGING_JSON')):
     formatter = OdooJsonFormatter(format)
     logging.getLogger().handlers[0].formatter = formatter
 
-    # Monkey-patch performance logging into Cursor and WebRequest
+    # Monkey-patch sql performance logging into Cursor
     execute_orig = Cursor.execute
     def execute(*args, **kwargs):
         current_thread = threading.current_thread()
@@ -64,33 +64,38 @@ if is_true(os.environ.get('OPENERP_LOGGING_JSON')):
         current_thread.query_time += (time.time() - start)
         return res
     Cursor.execute = execute
-    init_orig = WebRequest.init
-    def init(*args, **kwargs):
-        threading.current_thread().perf_t0 = time.time()
-        return init_orig(*args, **kwargs)
-    WebRequest.init = init
-    
+
     http_logger = logging.getLogger('werkzeug')
 
     # Configure performance logging
     json_perf_filter = JsonPerfFilter()
     http_logger.addFilter(json_perf_filter)
 
-    # # Configure http request logging
-    # def log_request(self, code="-", size="-"):
-    #     try:
-    #         path = uri_to_iri(self.path)
-    #     except AttributeError:
-    #         # path isn't set if the requestline was bad
-    #         path = self.requestline
-    #     record = {
-    #         "method": self.command,
-    #         "path": path,
-    #         "http_ver": self.request_version,
-    #         "http_code": str(code),
-    #         "size": size,
-    #         "client_addr": self.address_string()
-    #     }
-    #     http_logger.info('request%s', '', extra=record)
+    # define http log_request method
+    def log_request(self, code="-", size="-"):
+        try:
+            path = uri_to_iri(self.path)
+        except AttributeError:
+            # path isn't set if the requestline was bad
+            path = self.requestline
+        record = {
+            "method": self.command,
+            "path": path,
+            "http_ver": self.request_version,
+            "http_code": str(code),
+            "size": size,
+            "client_addr": self.address_string()
+        }
+        http_logger.info('request%s', '', extra=record)
 
-    # RequestHandler.log_request = log_request
+    # Patch WebRequest class to customise logging and track request start time
+    log_request_patched = False
+    init_orig = WebRequest.init
+    def init(*args, **kwargs):
+        global log_request_patched
+        if not log_request_patched:
+            wsgi_server.httpd.RequestHandlerClass.log_request = log_request
+            log_request_patched = True
+        threading.current_thread().perf_t0 = time.time()
+        return init_orig(*args, **kwargs)
+    WebRequest.init = init
