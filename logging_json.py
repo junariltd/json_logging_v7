@@ -5,7 +5,7 @@ import threading
 import time
 
 from distutils.util import strtobool
-# from openerp.netsvc import PerfFilter
+from openerp.sql_db import Cursor
 # from openerp.service.http_server import RequestHandler
 from werkzeug.urls import uri_to_iri
 
@@ -34,16 +34,16 @@ class OdooJsonFormatter(jsonlogger.JsonFormatter):
         return _super.add_fields(log_record, record, message_dict)
 
 
-# class JsonPerfFilter(logging.Filter):
-#     def filter(self, record):
-#         if hasattr(threading.current_thread(), "query_count"):
-#             record.response_time = round(
-#                 time.time() - threading.current_thread().perf_t0, TIMING_DP)
-#             record.query_count = threading.current_thread().query_count
-#             record.query_time = round(
-#                 threading.current_thread().query_time, TIMING_DP)
-#             delattr(threading.current_thread(), "query_count")
-#         return True
+class JsonPerfFilter(logging.Filter):
+    def filter(self, record):
+        if hasattr(threading.current_thread(), "query_count"):
+            # record.response_time = round(
+            #     time.time() - threading.current_thread().perf_t0, TIMING_DP)
+            record.query_count = threading.current_thread().query_count
+            record.query_time = round(
+                threading.current_thread().query_time, TIMING_DP)
+            delattr(threading.current_thread(), "query_count")
+        return True
 
 if is_true(os.environ.get('OPENERP_LOGGING_JSON')):
 
@@ -53,14 +53,25 @@ if is_true(os.environ.get('OPENERP_LOGGING_JSON')):
     formatter = OdooJsonFormatter(format)
     logging.getLogger().handlers[0].formatter = formatter
 
-    # http_logger = logging.getLogger('werkzeug')
+    # Monkey-patch SQL performance logging into Cursor
+    execute_orig = Cursor.execute
+    def execute(*args, **kwargs):
+        current_thread = threading.current_thread()
+        if not getattr(current_thread, 'query_count', False):
+            current_thread.query_count = 0
+            current_thread.query_time = 0
+        start = time.time()
+        res = execute_orig(*args, **kwargs)
+        current_thread.query_count += 1
+        current_thread.query_time += (time.time() - start)
+        return res
+    Cursor.execute = execute
+    
+    http_logger = logging.getLogger('werkzeug')
 
-    # # Configure performance logging
-    # for f in http_logger.filters:
-    #     if isinstance(f, PerfFilter):
-    #         http_logger.removeFilter(f)
-    # json_perf_filter = JsonPerfFilter()
-    # http_logger.addFilter(json_perf_filter)
+    # Configure performance logging
+    json_perf_filter = JsonPerfFilter()
+    http_logger.addFilter(json_perf_filter)
 
     # # Configure http request logging
     # def log_request(self, code="-", size="-"):
