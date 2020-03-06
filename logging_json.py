@@ -7,6 +7,7 @@ import time
 from distutils.util import strtobool
 from openerp.sql_db import Cursor
 # from openerp.service.http_server import RequestHandler
+from openerp.addons.web.http import WebRequest
 from werkzeug.urls import uri_to_iri
 
 _logger = logging.getLogger(__name__)
@@ -27,9 +28,6 @@ class OdooJsonFormatter(jsonlogger.JsonFormatter):
     def add_fields(self, log_record, record, message_dict):
         record.pid = os.getpid()
         record.dbname = getattr(threading.currentThread(), 'dbname', '?')
-        # Remove perf_info - it is replaced by JsonPerfFilter fields, defined below
-        if hasattr(record, "perf_info"):
-            delattr(record, "perf_info")
         _super = super(OdooJsonFormatter, self)
         return _super.add_fields(log_record, record, message_dict)
 
@@ -37,8 +35,8 @@ class OdooJsonFormatter(jsonlogger.JsonFormatter):
 class JsonPerfFilter(logging.Filter):
     def filter(self, record):
         if hasattr(threading.current_thread(), "query_count"):
-            # record.response_time = round(
-            #     time.time() - threading.current_thread().perf_t0, TIMING_DP)
+            record.response_time = round(
+                time.time() - threading.current_thread().perf_t0, TIMING_DP)
             record.query_count = threading.current_thread().query_count
             record.query_time = round(
                 threading.current_thread().query_time, TIMING_DP)
@@ -53,7 +51,7 @@ if is_true(os.environ.get('OPENERP_LOGGING_JSON')):
     formatter = OdooJsonFormatter(format)
     logging.getLogger().handlers[0].formatter = formatter
 
-    # Monkey-patch SQL performance logging into Cursor
+    # Monkey-patch performance logging into Cursor and WebRequest
     execute_orig = Cursor.execute
     def execute(*args, **kwargs):
         current_thread = threading.current_thread()
@@ -66,6 +64,11 @@ if is_true(os.environ.get('OPENERP_LOGGING_JSON')):
         current_thread.query_time += (time.time() - start)
         return res
     Cursor.execute = execute
+    init_orig = WebRequest.init
+    def init(*args, **kwargs):
+        threading.current_thread().perf_t0 = time.time()
+        return init_orig(*args, **kwargs)
+    WebRequest.init = init
     
     http_logger = logging.getLogger('werkzeug')
 
