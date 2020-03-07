@@ -88,7 +88,7 @@ if is_true(os.environ.get('OPENERP_LOGGING_JSON')):
             "http_ver": self.request_version,
             "http_code": str(code),
             "size": size,
-            "client_addr": self.address_string()
+            "client_addr": self.headers.get('x-real-ip', self.address_string())
         }
         http_logger.info('request%s', '', extra=record)
 
